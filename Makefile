@@ -7,7 +7,10 @@ CPPFLAGS += -DMODES_DUMP1090_VERSION=\"$(DUMP1090_VERSION)\" -DMODES_DUMP1090_VA
 
 DIALECT = -std=c11
 CFLAGS += $(DIALECT) -O2 -g -Wall -Werror -W -D_DEFAULT_SOURCE
-LIBS = -lpthread -lm -lrt
+# for Linux
+# LIBS = -lpthread -lm -lrt 
+# for macOS
+LIBS = -lpthread -lm
 
 ifeq ($(RTLSDR), yes)
   SDR_OBJ += sdr_rtlsdr.o

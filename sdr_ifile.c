@@ -51,6 +51,19 @@
 #include "dump1090.h"
 #include "sdr_ifile.h"
 
+#define EMULATED_CLOCK_NANOSLEEP 1
+
+#ifdef EMULATED_CLOCK_NANOSLEEP
+#include <mach/mach_time.h>
+#define IV_1E9 1000000000
+#ifndef TIMER_ABSTIME
+#  define TIMER_ABSTIME   0x01
+#endif // TIMER_ABSTIME
+static int emulated_clock_nanosleep(clockid_t clock_id, int flags,
+			   const struct timespec *rqtp,
+			   struct timespec *rmtp);
+#endif // EMULATED_CLOCK_NANOSLEEP
+
 static struct {
     const char *filename;
     input_format_t input_format;
@@ -242,8 +255,13 @@ void ifileRun()
 
         if (ifile.throttle || Modes.interactive) {
             // Wait until we are allowed to release this buffer to the main thread
+#ifdef EMULATED_CLOCK_NANOSLEEP
+            while (emulated_clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_buffer_delivery, NULL) == EINTR)
+                ;
+#else // !EMULATED_CLOCK_NANOSLEEP
             while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_buffer_delivery, NULL) == EINTR)
                 ;
+#endif // EMULATED_CLOCK_NANOSLEEP
 
             // compute the time we can deliver the next buffer.
             next_buffer_delivery.tv_nsec += outbuf->length * 1e9 / Modes.sample_rate;
@@ -284,3 +302,44 @@ void ifileClose()
         ifile.fd = -1;
     }
 }
+
+// See https://fossies.org/linux/privat/Time-HiRes-1.9760.tar.gz/Time-HiRes-1.9760/HiRes.xs?m=t
+// Used under Perl License, aka GPL v1 or later, or Artistic License
+
+#ifdef EMULATED_CLOCK_NANOSLEEP
+static int emulated_clock_nanosleep(clockid_t clock_id, int flags,
+			   const struct timespec *rqtp,
+			   struct timespec *rmtp) {
+    struct timespec timespec_init;
+    clock_gettime(clock_id, &timespec_init);
+    switch (clock_id) {
+    case CLOCK_REALTIME:
+    case CLOCK_MONOTONIC:
+      {
+	uint64_t nanos = rqtp->tv_sec * IV_1E9 + rqtp->tv_nsec;
+        int success;
+	if ((flags & TIMER_ABSTIME)) {
+	  uint64_t back =
+	    timespec_init.tv_sec * IV_1E9 + timespec_init.tv_nsec;
+	  nanos = nanos > back ? nanos - back : 0;
+	}
+        success =
+          mach_wait_until(mach_absolute_time() + nanos) == KERN_SUCCESS;
+
+        /* In the relative sleep, the rmtp should be filled in with
+         * the 'unused' part of the rqtp in case the sleep gets
+         * interrupted by a signal.  But it is unknown how signals
+         * interact with mach_wait_until().  In the absolute sleep,
+         * the rmtp should stay untouched. */
+        rmtp->tv_sec  = 0;
+        rmtp->tv_nsec = 0;
+
+        return success;
+      }
+
+    default:
+      return -1;
+      break;
+    }
+}
+#endif // EMULATED_CLOCK_NANOSLEEP
